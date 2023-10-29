@@ -36,9 +36,26 @@ float* getVertices(char* line){
     return out;
 }
 
+typedef struct parsedFace {
+    long* vertexIndicies;
+    long* normalIndicies;
+    long* textureIndicies;
+
+    short numVerticies;
+    short numNormals;
+    short numTextures;
+} ParsedFace;
+
 // This parses the lines that start with f to get just the first value which is the vertex index
-long* getFaceIndicies(char* line, int* outPos){
-    long* out = malloc(sizeof(long) * 3);
+ParsedFace parseFace(char* line, int* outPos){
+    ParsedFace out;
+    out.numNormals = 0;
+    out.numVerticies = 0;
+    out.numTextures = 0;
+
+    out.vertexIndicies = malloc(sizeof(long) * 3);
+    out.normalIndicies = NULL;
+    out.textureIndicies = NULL;
     *outPos = 0;
     int maxSize = 3;
     int pos = -1;
@@ -51,10 +68,41 @@ long* getFaceIndicies(char* line, int* outPos){
     while(**nextPos != '\0'){
         if (*outPos >= maxSize){
             maxSize++;
-            out = realloc(out, sizeof(long) * maxSize);
+            out.vertexIndicies = realloc(out.vertexIndicies, sizeof(long) * maxSize);
+            if (out.normalIndicies) {
+                out.normalIndicies = realloc(out.normalIndicies, sizeof(long) * maxSize);
+            }
+            if (out.textureIndicies) {
+                out.textureIndicies = realloc(out.textureIndicies, sizeof(long) * maxSize);
+            }
         }
 
-        out[*outPos] = strtol(*nextPos, nextPos, 10) - 1;
+        out.vertexIndicies[*outPos] = strtol(*nextPos, nextPos, 10) - 1;
+
+        if (**nextPos == '/') {
+            long** indexPosition = &out.textureIndicies;
+            if (*(*nextPos + 1) == '/') {
+                indexPosition = &out.normalIndicies;
+                (*nextPos)++;
+            }
+
+            if (!*indexPosition) {
+                *indexPosition = malloc(sizeof(long) * 3);
+            }
+
+            /* printf("Now at: %s\n", *nextPos); */
+            /* printf("Starting at: %s\n", *nextPos + 1); */
+            (*indexPosition)[*outPos] = strtol(*nextPos + 1, nextPos, 10) - 1;
+            /* printf("Now at: %s\n", *nextPos); */
+        }
+
+        if (**nextPos == '/') {
+            if (!out.normalIndicies) {
+                out.normalIndicies = malloc(sizeof(long) * 3);
+            }
+            out.normalIndicies[*outPos] = strtol(*nextPos + 1, nextPos, 10) - 1;
+        }
+        /* printf("Now at: %s\n", *nextPos); */
         while (**nextPos != ' ' && **nextPos != '\0') {*nextPos = *nextPos + 1;}
         *outPos = *outPos + 1;
     }
@@ -85,6 +133,7 @@ Model loadModel(char* filename) {
 
     // TODO Adjust the max size of this to be the average size of the models
     void* vertexList = createList(10);
+    void* normalList = createList(10);
 
     long lineNum = 0;
     while(getline(line, &len, file) != -1){
@@ -96,14 +145,20 @@ Model loadModel(char* filename) {
 
             // Storing the verticies in order
             listAppend(vertexList, verts);
-        }else if(beginsWith(*line, "f \0")){
+        } else if (beginsWith(*line, "vn \0")) {
+            // Got a normal need to parse the 3 floats
+            float* normals = getVertices(*line);
+
+            // Storing the normals in order
+            listAppend(normalList, normals);
+        } else if(beginsWith(*line, "f \0")){
             /* printf("Got new face\n"); */
             // Got a face
             // TODO Need to make the faces using the points that are stored in the vertexList
             int numVerticies;
             /* printf("Processing line %s\n", *line); */
-            long* faceIndicies = getFaceIndicies(*line, &numVerticies);
-            /* printf("f %ld, %ld, %ld, %ld\n", faceIndicies[0], faceIndicies[1], faceIndicies[2], faceIndicies[3]); */
+            ParsedFace parsedFace = parseFace(*line, &numVerticies);
+            /* printf("f %ld, %ld, %ld, %ld\n", parsedFace.vertexIndicies[0], parsedFace.vertexIndicies[1], parsedFace.vertexIndicies[2], parsedFace.vertexIndicies[3]); */
 
             /* printf("Number of verticies in face: %d\n", numVerticies); */
             unsigned int numTris;
@@ -116,15 +171,16 @@ Model loadModel(char* filename) {
                     out = realloc(out, sizeof(float) * maxSize);
                 }
 
-                out[currSize] = faceIndicies[0];
-                out[currSize + 1] = faceIndicies[1];
-                out[currSize + 2] = faceIndicies[2];
+                out[currSize] = parsedFace.vertexIndicies[0];
+                out[currSize + 1] = parsedFace.vertexIndicies[1];
+                out[currSize + 2] = parsedFace.vertexIndicies[2];
 
                 currSize = currSize + 3;
             } else {
                 printf("Num verticies in face: %d\n", numVerticies);
-                triangles = triangulateFace(faceIndicies, (float**) getListElements(vertexList), numVerticies, &numTris);
+                triangles = triangulateFace(parsedFace.vertexIndicies, (float**) getListElements(vertexList), numVerticies, &numTris);
 
+                printf("Num tris: %d\n", numTris);
                 outModel.numTris += numTris;
 
                 for (int i = 0; i < numTris; i++){
@@ -135,14 +191,20 @@ Model loadModel(char* filename) {
                     }
 
                     // The triangulate face returns the relative verticies to what it was handed whcih is the faceIndicies
-                    out[currSize] = faceIndicies[triangles[i][0]];
-                    out[currSize + 1] = faceIndicies[triangles[i][1]];
-                    out[currSize + 2] = faceIndicies[triangles[i][2]];
+                    out[currSize] = parsedFace.vertexIndicies[triangles[i][0]];
+                    out[currSize + 1] = parsedFace.vertexIndicies[triangles[i][1]];
+                    out[currSize + 2] = parsedFace.vertexIndicies[triangles[i][2]];
 
                     /* printf("OUT: indicies: %d, %d, %d.\n", out[currSize], out[currSize + 1], out[currSize + 2]); */
                     currSize = currSize + 3;
                 }
-                free(faceIndicies);
+                free(parsedFace.vertexIndicies);
+                if (parsedFace.normalIndicies) {
+                    free(parsedFace.normalIndicies);
+                }
+                if (parsedFace.textureIndicies) {
+                    free(parsedFace.textureIndicies);
+                }
             }
         }
     }
@@ -157,14 +219,31 @@ Model loadModel(char* filename) {
         outVerts[i*3 + 2] = point[2];
     }
 
+    unsigned int numNormals = getListSize(normalList);
+    float* outNormals = malloc(sizeof(float) * numNormals * 3);
+    for (unsigned int i = 0; i < numNormals; i++){
+        float* point = getListElement(normalList, i);
+        outNormals[i*3] = point[0];
+        outNormals[i*3 + 1] = point[1];
+        outNormals[i*3 + 2] = point[2];
+    }
+
     free(*line);
     free(line);
     freeElements(vertexList);
+    freeElements(normalList);
 
     out = realloc(out, sizeof(float) * currSize);
     outModel.indicies = out;
     outModel.verts = outVerts;
     outModel.numVerts = numVerts;
+
+    outModel.normals = outNormals;
+    outModel.numNormals = numNormals;
+
+    /* printf("Finished parsing\n"); */
+    /* printf("Num Tris: %ld\n", outModel.numTris); */
+
     return outModel;
 }
 
